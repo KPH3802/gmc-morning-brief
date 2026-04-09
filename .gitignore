@@ -1,0 +1,10 @@
+# Never commit credentials or data files
+config.py
+*.db
+*.csv
+*.xlsx
+*.log
+news_digest_backup_*.py
+Test_Emails/
+__pycache__/
+.DS_Store
