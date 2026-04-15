@@ -153,6 +153,54 @@ def fetch_yf_news(ticker):
 # ---------------------------------------------------------------------------
 # 5. NEWS — Gmail IMAP
 # ---------------------------------------------------------------------------
+_INBOX_DOMAIN_WHITELIST = {
+    "bloomberg.com", "news.bloomberg.com",
+    "tldrnewsletter.com",
+    "thedailyupside.com",
+    "chartr.co",
+    "snacks.robinhood.com",
+    "sherwood.news",
+    "zerohedge.com",
+    "theblock.co",
+    "visualcapitalist.com",
+    "bizjournals.com",
+    "interactivebrokers.com",
+    "morningbrew.com",
+    "substack.com",
+    "axiosmarkets.com",
+    "notboring.co",
+}
+_INBOX_EXACT_SENDERS = {"kph3802@gmail.com"}
+_SUBSTACK_KEYWORDS = ["market", "stock", "fund", "fed", "earnings", "crypto",
+                       "inflation", "rate", "trade", "economy"]
+
+
+def _extract_sender_email(from_header):
+    """Extract bare email address from From header."""
+    m = re.search(r'<([^>]+)>', from_header)
+    if m:
+        return m.group(1).lower()
+    return from_header.strip().lower()
+
+
+def _sender_matches_whitelist(sender_email, subject):
+    """Check if sender email matches domain whitelist rules."""
+    if sender_email in _INBOX_EXACT_SENDERS:
+        return True
+    domain = sender_email.split("@")[-1] if "@" in sender_email else ""
+    if not domain:
+        return False
+    # Check exact domain or subdomain match
+    for wd in _INBOX_DOMAIN_WHITELIST:
+        if domain == wd or domain.endswith("." + wd):
+            # Substack requires financial keyword in subject
+            if wd == "substack.com":
+                subj_lower = subject.lower()
+                return any(kw in subj_lower for kw in _SUBSTACK_KEYWORDS)
+            return True
+    return False
+
+
 def fetch_gmail_news(hours=24):
     headlines = []
     try:
@@ -162,9 +210,6 @@ def fetch_gmail_news(hours=24):
         since_date = (datetime.now() - timedelta(hours=hours)).strftime("%d-%b-%Y")
         _, data = mail.search(None, f'(SINCE "{since_date}")')
         ids = data[0].split()[-50:]
-        keywords = ["market", "stock", "fund", "fed", "earnings", "crypto",
-                    "8-K", "insider", "scanner", "signal", "alert", "economic",
-                    "GDP", "CPI", "inflation", "rate", "trade"]
         for uid in ids:
             try:
                 _, msg_data = mail.fetch(uid, "(RFC822)")
@@ -180,9 +225,10 @@ def fetch_gmail_news(hours=24):
                         subject += part.decode(enc or "utf-8", errors="replace")
                     else:
                         subject += part
-                sender = raw_sender.split("<")[0].strip().strip('"')
-                if any(kw.lower() in subject.lower() for kw in keywords):
-                    headlines.append(f"[{sender}] {subject}")
+                sender_email = _extract_sender_email(raw_sender)
+                sender_display = raw_sender.split("<")[0].strip().strip('"')
+                if _sender_matches_whitelist(sender_email, subject):
+                    headlines.append(f"[{sender_display}] {subject}")
             except Exception:
                 continue
         mail.logout()
@@ -218,13 +264,19 @@ def fetch_macro_calendar():
                         time_label = dt_ct.strftime('%-I:%M %p CT')
                     except Exception:
                         time_label = raw_time or 'All Day'
+                    importance = ev.get('importance', 0)
+                    try:
+                        importance = int(importance)
+                    except (ValueError, TypeError):
+                        importance = 0
                     events.append({
                         'time':     time_label,
                         'event':    ev.get('event', ''),
                         'estimate': str(ev.get('estimate') or '--'),
                         'previous': str(ev.get('previous') or '--'),
                         'actual':   str(ev.get('actual')   or '--'),
-                        'impact':   str(ev.get('impact')   or '')
+                        'impact':   str(ev.get('impact')   or ''),
+                        'importance': importance
                     })
                 events.sort(key=lambda x: x['time'])
                 print(f'  [FMP] {len(events)} macro events today')
@@ -281,11 +333,17 @@ def fetch_yesterdays_actuals():
                     actual = ev.get('actual')
                     if actual is None or str(actual).strip() in ('', '--', 'None'):
                         continue
+                    importance = ev.get('importance', 0)
+                    try:
+                        importance = int(importance)
+                    except (ValueError, TypeError):
+                        importance = 0
                     results.append({
                         'event':    ev.get('event', ''),
                         'estimate': str(ev.get('estimate') or '--'),
                         'previous': str(ev.get('previous') or '--'),
-                        'actual':   str(actual)
+                        'actual':   str(actual),
+                        'importance': importance
                     })
                 print(f'  [FMP] {len(results)} actuals from yesterday')
                 return results
@@ -474,6 +532,12 @@ def macro_table(events):
         return "<p style='color:#c0392b;font-weight:bold;'>&#9888; Macro calendar unavailable (data source rate limited). Check <a href='https://www.investing.com/economic-calendar/' style='color:#c0392b;'>investing.com/economic-calendar</a> manually.</p>"
     if not events:
         return "<p style='color:#666;font-style:italic;'>No US macro releases scheduled today.</p>"
+    # Filter by importance >= 2; for All Day events, cap at 10
+    timed = [e for e in events if e.get('importance', 0) >= 2 and e.get('time', '') != 'All Day']
+    all_day = [e for e in events if e.get('importance', 0) >= 2 and e.get('time', '') == 'All Day'][:10]
+    events = timed + all_day
+    if not events:
+        return "<p style='color:#666;font-style:italic;'>No significant US macro releases scheduled today.</p>"
     rows = ["<table style='border-collapse:collapse;width:100%;font-size:14px;'>",
             "<tr style='background:#1C3560;color:white;'>"]
     for col, align in [("Time CT","left"),("Event","left"),("Estimate","right"),("Previous","right"),("Actual","right")]:
@@ -496,6 +560,12 @@ def macro_table(events):
 def yesterdays_table(actuals):
     if not actuals:
         return "<p style='color:#666;font-style:italic;'>No US macro releases yesterday.</p>"
+    # Only show importance == 3, max 8 rows
+    high_imp = [e for e in actuals if e.get('importance', 0) == 3]
+    extra = max(0, len(high_imp) - 8)
+    actuals = high_imp[:8]
+    if not actuals:
+        return "<p style='color:#666;font-style:italic;'>No high-importance US macro releases yesterday.</p>"
     rows = ["<table style='border-collapse:collapse;width:100%;font-size:14px;'>",
             "<tr style='background:#1C3560;color:white;'>"]
     for col, align in [("Event","left"),("Estimate","right"),("Previous","right"),("Actual","right")]:
@@ -512,6 +582,8 @@ def yesterdays_table(actuals):
             "</tr>"
         ]
     rows.append("</table>")
+    if extra > 0:
+        rows.append(f"<p style='color:#888;font-size:12px;margin:6px 0 0;'>+ {extra} more high-importance releases</p>")
     return "\n".join(rows)
 
 def section_div(title, content, border=True):
@@ -791,45 +863,45 @@ def build_daily_email(equity, crypto, macro, gmail, yesterdays, history, top_new
 
     # Section numbering
     sec_num = 1
+    num_symbols = ["&#x2460;","&#x2461;","&#x2462;","&#x2463;","&#x2464;","&#x2465;","&#x2466;"]
     sections = [gmc_header("Morning Intelligence Brief")]
 
-    # GMC Performance (Phase 3) — first section after header
+    # 1. GMC Performance (Phase 3) — first section after header
     if perf is not None:
         perf_html = render_portfolio_snapshot(perf) + render_open_positions_table(perf)
         sections.append(section_div("GMC Performance", perf_html))
         sec_num += 1
 
-    # Macro today
-    num_symbols = ["&#x2460;","&#x2461;","&#x2462;","&#x2463;","&#x2464;","&#x2465;","&#x2466;"]
+    # 2. Need to Know Today
+    sections.append(section_div(f"{num_symbols[sec_num - 1]} Need to Know &mdash; Today", need_to_know_html(top_news)))
+    sec_num += 1
+
+    # 3. Macro Calendar Today
     sections.append(section_div(f"{num_symbols[sec_num - 1]} Macro Calendar &mdash; Today", macro_table(macro)))
     sec_num += 1
 
-    # Yesterday's actuals
+    # 4. Yesterday's Numbers
     if yesterdays:
         sections.append(section_div(f"{num_symbols[sec_num - 1]} Yesterday&rsquo;s Numbers", yesterdays_table(yesterdays)))
         sec_num += 1
 
-    # This day in history
-    if history:
-        sections.append(f"""<div style='padding:16px 30px;background:#fdf8f0;border-bottom:1px solid #e8e0d0;'>
-  <h3 style='color:#1C3560;font-size:13px;margin:0 0 10px;text-transform:uppercase;letter-spacing:1px;'>&#128197; This Day in History</h3>
-  {history_html(history)}
-</div>""")
-        sec_num += 1
-
-    # Need to Know
-    sections.append(section_div(f"{num_symbols[sec_num - 1]} Need to Know &mdash; Today", need_to_know_html(top_news)))
-    sec_num += 1
-
-    # Position intelligence — include open count in title
+    # 5. Position Intelligence
     open_count = perf.get("portfolio_header", {}).get("open_positions_count", len(equity)) if perf else len(equity)
     cards = build_position_cards(equity, crypto, summaries)
     sections.append(section_div(
         f"{num_symbols[sec_num - 1]} Position Intelligence &mdash; {open_count} / 20 open",
         cards
     ))
+    sec_num += 1
 
-    # Inbox highlights
+    # 6. This Day in History
+    if history:
+        sections.append(f"""<div style='padding:16px 30px;background:#fdf8f0;border-bottom:1px solid #e8e0d0;'>
+  <h3 style='color:#1C3560;font-size:13px;margin:0 0 10px;text-transform:uppercase;letter-spacing:1px;'>&#128197; This Day in History</h3>
+  {history_html(history)}
+</div>""")
+
+    # 7. Inbox Highlights
     if gmail:
         sections.append(f"""<div style='padding:16px 30px;background:#f0f4ff;border-top:1px solid #dce4f5;'>
   <h3 style='color:#1C3560;font-size:13px;margin:0 0 8px;text-transform:uppercase;letter-spacing:1px;'>Inbox Highlights</h3>
