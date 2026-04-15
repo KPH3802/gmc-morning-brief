@@ -397,7 +397,8 @@ def summarize_all_positions(positions_data, weekly=False):
     blocks = []
     for p in positions_data:
         hl = chr(10).join(f"  - {h}" for h in p["headlines"][:12]) or "  (no headlines)"
-        blocks.append(f"TICKER: {p['ticker']} | {p['direction']} | {p['source']}\n{hl}")
+        company = p.get('company_name', p['ticker'])
+        blocks.append(f"TICKER: {p['ticker']} | COMPANY: {company} | {p['direction']} | {p['source']}\n{hl}")
     prompt = f"""You are a financial research assistant for Grist Mill Capital.
 For each ticker below write a 2-3 sentence facts-only summary covering {horizon}.
 Rules: facts only, no opinions, no predictions. If no material news write exactly: "No material news {horizon}."
@@ -777,7 +778,14 @@ def build_daily_email(equity, crypto, macro, gmail, yesterdays, history, top_new
         yfn = fetch_yf_news(yf_ticker)
         headlines = list(dict.fromkeys(rss + yfn))
         pos_headlines[ticker] = headlines
-        batch_input.append({"ticker": ticker, "direction": direction, "source": source, "headlines": headlines})
+        # Fetch verified company name from yfinance to prevent Claude hallucinating wrong company
+        try:
+            import yfinance as yf
+            info = yf.Ticker(yf_ticker).info
+            company_name = info.get("longName") or info.get("shortName") or ticker
+        except Exception:
+            company_name = ticker
+        batch_input.append({"ticker": ticker, "company_name": company_name, "direction": direction, "source": source, "headlines": headlines})
 
     summaries = summarize_all_positions(batch_input, weekly=False)
 
