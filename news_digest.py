@@ -243,6 +243,7 @@ def fetch_macro_calendar():
     """Fetch today's economic calendar from FMP (primary) with ForexFactory fallback."""
     today_date = NOW_CT.date()
     events = []
+    fmp_err = "fmp_returned_no_data"
     # --- PRIMARY: FMP ---
     try:
         from_str = today_date.strftime('%Y-%m-%d')
@@ -264,11 +265,8 @@ def fetch_macro_calendar():
                         time_label = dt_ct.strftime('%-I:%M %p CT')
                     except Exception:
                         time_label = raw_time or 'All Day'
-                    importance = ev.get('importance', 0)
-                    try:
-                        importance = int(importance)
-                    except (ValueError, TypeError):
-                        importance = 0
+                    impact_str = str(ev.get('impact') or '').strip().lower()
+                    importance = {'high': 3, 'medium': 2, 'low': 1}.get(impact_str, 0)
                     events.append({
                         'time':     time_label,
                         'event':    ev.get('event', ''),
@@ -281,15 +279,19 @@ def fetch_macro_calendar():
                 events.sort(key=lambda x: x['time'])
                 print(f'  [FMP] {len(events)} macro events today')
                 return events
+        fmp_err = f"http_{resp.status_code}"
         print(f'[WARN] FMP calendar returned {resp.status_code} -- falling back to ForexFactory')
     except Exception as e:
+        fmp_err = str(e)[:100].strip().replace("\n", " ")
         print(f'[WARN] FMP calendar failed: {e} -- falling back to ForexFactory')
     # --- FALLBACK: ForexFactory ---
+    ff_ok = False
     try:
         url = 'https://nfs.faireconomy.media/ff_calendar_thisweek.json'
         resp = requests.get(url, timeout=15, headers={'User-Agent': 'Mozilla/5.0'})
         if resp.status_code != 200:
             print(f'[WARN] ForexFactory returned {resp.status_code} -- macro calendar unavailable, check investing.com')
+            print(f"[FALLBACK] source=macro_calendar_today primary=fmp primary_error={fmp_err} fallback=forexfactory result=fail")
             return None
         for ev in resp.json():
             if ev.get('currency') != 'USD':
@@ -308,8 +310,10 @@ def fetch_macro_calendar():
                 'actual': ev.get('actual') or '--', 'impact': ev.get('impact', '')
             })
         events.sort(key=lambda x: x['time'])
+        ff_ok = True
     except Exception as e:
         print(f'[WARN] ForexFactory calendar failed: {e}')
+    print(f"[FALLBACK] source=macro_calendar_today primary=fmp primary_error={fmp_err} fallback=forexfactory result={'ok' if ff_ok else 'fail'}")
     return events
 
 
@@ -317,6 +321,7 @@ def fetch_yesterdays_actuals():
     """Fetch yesterday's released economic data from FMP with ForexFactory fallback."""
     yesterday_date = (NOW_CT - timedelta(days=1)).date()
     results = []
+    fmp_err = "fmp_returned_no_data"
     # --- PRIMARY: FMP ---
     try:
         from_str = yesterday_date.strftime('%Y-%m-%d')
@@ -333,11 +338,8 @@ def fetch_yesterdays_actuals():
                     actual = ev.get('actual')
                     if actual is None or str(actual).strip() in ('', '--', 'None'):
                         continue
-                    importance = ev.get('importance', 0)
-                    try:
-                        importance = int(importance)
-                    except (ValueError, TypeError):
-                        importance = 0
+                    impact_str = str(ev.get('impact') or '').strip().lower()
+                    importance = {'high': 3, 'medium': 2, 'low': 1}.get(impact_str, 0)
                     results.append({
                         'event':    ev.get('event', ''),
                         'estimate': str(ev.get('estimate') or '--'),
@@ -347,13 +349,17 @@ def fetch_yesterdays_actuals():
                     })
                 print(f'  [FMP] {len(results)} actuals from yesterday')
                 return results
+        fmp_err = f"http_{resp.status_code}"
     except Exception as e:
+        fmp_err = str(e)[:100].strip().replace("\n", " ")
         print(f'[WARN] FMP yesterdays actuals failed: {e}')
     # --- FALLBACK: ForexFactory ---
+    ff_ok = False
     try:
         url = 'https://nfs.faireconomy.media/ff_calendar_thisweek.json'
         resp = requests.get(url, timeout=15, headers={'User-Agent': 'Mozilla/5.0'})
         if resp.status_code != 200:
+            print(f"[FALLBACK] source=yesterdays_actuals primary=fmp primary_error={fmp_err} fallback=forexfactory result=fail")
             return []
         for ev in resp.json():
             if ev.get('currency') != 'USD':
@@ -371,8 +377,10 @@ def fetch_yesterdays_actuals():
                 'event': ev.get('title', ''), 'estimate': ev.get('forecast') or '--',
                 'previous': ev.get('previous') or '--', 'actual': actual
             })
+        ff_ok = len(results) > 0
     except Exception as e:
         print(f'[WARN] Yesterday actuals fallback failed: {e}')
+    print(f"[FALLBACK] source=yesterdays_actuals primary=fmp primary_error={fmp_err} fallback=forexfactory result={'ok' if ff_ok else 'fail'}")
     return results
 
 def fetch_this_day_in_history():
