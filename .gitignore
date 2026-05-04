@@ -8,3 +8,6 @@ news_digest_backup_*.py
 Test_Emails/
 __pycache__/
 .DS_Store
+
+# Reference docs / receipts (May 4 cleanup)
+*.pdf
